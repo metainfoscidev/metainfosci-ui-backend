@@ -10,6 +10,78 @@ const dotenv = require('dotenv');
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
+// Public Platform Insights (users/publications cache)
+// GET public cache
+app.get('/admin-services/public/platform-insights/', async (req, res) => {
+  try {
+    const { platformInsights } = collections();
+    const doc = await platformInsights.findOne({ _id: 'public_metrics' });
+    if (!doc) {
+      return res.json({ total_users: 0, total_publications: 0, updated_at: null });
+    }
+    const { total_users = 0, total_publications = 0, updatedAt = null } = doc;
+    return res.json({ total_users, total_publications, updated_at: updatedAt });
+  } catch (err) {
+    console.error('GET /public/platform-insights error:', err);
+    return res.status(500).json({ error: 'Failed to fetch platform insights' });
+  }
+});
+
+// POST cache upsert (update only if incoming values are greater)
+app.post('/admin-services/platform-insights/cache-upsert', async (req, res) => {
+  try {
+    // Optional bearer token guard
+    const requiredToken = process.env.UPSERT_TOKEN;
+    if (requiredToken) {
+      const authHeader = req.headers['authorization'] || '';
+      const token = authHeader.startsWith('Bearer ')
+        ? authHeader.substring('Bearer '.length)
+        : '';
+      if (token !== requiredToken) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+    }
+
+    const { total_users, total_publications } = req.body || {};
+    const incUsers = Number(total_users);
+    const incPubs = Number(total_publications);
+
+    const { platformInsights } = collections();
+    const existing = (await platformInsights.findOne({ _id: 'public_metrics' })) || {
+      _id: 'public_metrics',
+      total_users: 0,
+      total_publications: 0,
+      updatedAt: null,
+    };
+
+    const next = { ...existing };
+    const now = new Date();
+
+    let changed = false;
+    if (!Number.isNaN(incUsers) && incUsers > (existing.total_users || 0)) {
+      next.total_users = incUsers;
+      changed = true;
+    }
+    if (!Number.isNaN(incPubs) && incPubs > (existing.total_publications || 0)) {
+      next.total_publications = incPubs;
+      changed = true;
+    }
+    if (changed) {
+      next.updatedAt = now;
+      await platformInsights.updateOne(
+        { _id: 'public_metrics' },
+        { $set: { total_users: next.total_users, total_publications: next.total_publications, updatedAt: next.updatedAt } },
+        { upsert: true }
+      );
+    }
+
+    return res.json({ success: true, data: { total_users: next.total_users, total_publications: next.total_publications, updated_at: next.updatedAt } });
+  } catch (err) {
+    console.error('POST /platform-insights/cache-upsert error:', err);
+    return res.status(500).json({ error: 'Failed to upsert platform insights' });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = process.env.DB_NAME || 'metainfosci_db';
@@ -43,7 +115,8 @@ function collections() {
   const events = db.collection('gallery_events');
   const categories = db.collection('event_categories');
   const users = db.collection('users');
-  return { events, categories, users };
+  const platformInsights = db.collection('platform_insights');
+  return { events, categories, users, platformInsights };
 }
 
 function mapEvent(doc) {
