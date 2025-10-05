@@ -82,6 +82,8 @@ app.post('/admin-services/platform-insights/cache-upsert', async (req, res) => {
   }
 });
 
+// (moved public platform insights routes below after app initialization)
+
 const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = process.env.DB_NAME || 'metainfosci_db';
