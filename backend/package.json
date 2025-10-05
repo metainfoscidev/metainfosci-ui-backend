@@ -1,0 +1,19 @@
+{
+  "name": "metainfoviz-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MongoDB-backed API server for MetaInfoViz (no auth)",
+  "main": "backend.cjs",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node backend.cjs",
+    "seed": "node seed-data.cjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mongodb": "^6.20.0"
+  }
+}
