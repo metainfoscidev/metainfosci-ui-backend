@@ -9,9 +9,6 @@ const bcrypt = require('bcryptjs');
 const dotenv = require('dotenv');
 
 dotenv.config({ path: path.join(__dirname, '.env') });
- 
-
-// (moved public platform insights routes below after app initialization)
 
 const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -46,8 +43,9 @@ function collections() {
   const events = db.collection('gallery_events');
   const categories = db.collection('event_categories');
   const users = db.collection('users');
-  const platformInsights = db.collection('platform_insights');
-  return { events, categories, users, platformInsights };
+  const insights = db.collection('public_insights');
+  const teamMembers = db.collection('team_members');
+  return { events, categories, users, insights, teamMembers };
 }
 
 function mapEvent(doc) {
@@ -60,6 +58,12 @@ function mapUser(doc) {
   if (!doc) return null;
   const { _id, username, createdAt, updatedAt } = doc;
   return { id: _id?.toString(), username, createdAt, updatedAt };
+}
+
+function mapTeamMember(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return { id: _id?.toString(), ...rest };
 }
 
 function isValidUsername(u) {
@@ -77,6 +81,84 @@ app.get('/health', async (req, res) => {
     res.json({ status: 'ok', database: 'connected', timestamp: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ status: 'error', error: err.message });
+  }
+});
+
+// Public insights (users/publications) storage helpers
+async function getPublicInsightsDoc() {
+  const { insights } = collections();
+  let doc = await insights.findOne({ key: 'global' });
+  if (!doc) {
+    doc = {
+      key: 'global',
+      total_users: 0,
+      total_publications: 0,
+      updatedAt: new Date(),
+      source: 'init',
+    };
+    await insights.insertOne(doc);
+  }
+  return doc;
+}
+
+function toNumberOrZero(val) {
+  const n = Number(val);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+// GET public insights (no auth)
+app.get('/admin-services/public/platform-insights/', async (req, res) => {
+  try {
+    const doc = await getPublicInsightsDoc();
+    res.json({
+      total_users: toNumberOrZero(doc.total_users),
+      total_publications: toNumberOrZero(doc.total_publications),
+      updated_at: doc.updatedAt,
+    });
+  } catch (err) {
+    console.error('GET /public/platform-insights error:', err);
+    res.status(500).json({ error: 'Failed to fetch public insights' });
+  }
+});
+
+// UPSERT (increase-only) public insights (currently no auth; consider protecting in production)
+app.post('/admin-services/platform-insights/cache-upsert', async (req, res) => {
+  try {
+    const { total_users, total_publications } = req.body || {};
+    const incomingUsers = toNumberOrZero(total_users);
+    const incomingPubs = toNumberOrZero(total_publications);
+
+    const { insights } = collections();
+    const now = new Date();
+    const doc = await getPublicInsightsDoc();
+
+    const updates = {};
+    let changed = false;
+
+    if (incomingUsers > toNumberOrZero(doc.total_users)) {
+      updates.total_users = incomingUsers;
+      changed = true;
+    }
+    if (incomingPubs > toNumberOrZero(doc.total_publications)) {
+      updates.total_publications = incomingPubs;
+      changed = true;
+    }
+
+    if (changed) {
+      updates.updatedAt = now;
+      updates.source = 'client-upsert';
+      await insights.updateOne({ key: 'global' }, { $set: updates });
+    }
+
+    const latest = await insights.findOne({ key: 'global' });
+    res.json({ success: true, updated: changed, data: {
+      total_users: toNumberOrZero(latest.total_users),
+      total_publications: toNumberOrZero(latest.total_publications),
+      updated_at: latest.updatedAt,
+    }});
+  } catch (err) {
+    console.error('POST /platform-insights/cache-upsert error:', err);
+    res.status(500).json({ error: 'Failed to upsert public insights' });
   }
 });
 
@@ -107,6 +189,7 @@ app.post('/admin-services/gallery-events/', async (req, res) => {
       title: payload.title,
       description: payload.description || '',
       date: payload.date || '',
+      end_date: payload.end_date ? payload.end_date : null,
       location: payload.location || '',
       images: Array.isArray(payload.images) ? payload.images : [],
       category: payload.category || '',
@@ -135,7 +218,7 @@ app.put('/admin-services/gallery-events/:id', async (req, res) => {
       return res.status(400).json({ error: 'Invalid id' });
     }
     const updates = req.body || {};
-    const allowed = ['title', 'description', 'date', 'location', 'images', 'category', 'link', 'status', 'attendees'];
+    const allowed = ['title', 'description', 'date', 'end_date', 'location', 'images', 'category', 'link', 'status', 'attendees'];
     const $set = { updatedAt: new Date() };
     for (const key of allowed) {
       if (key in updates) $set[key] = updates[key];
@@ -193,6 +276,99 @@ app.get('/admin-services/events/categories/', async (req, res) => {
   } catch (err) {
     console.error('GET /events/categories error:', err);
     res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+// TEAM MEMBERS CRUD
+app.get('/admin-services/team-members/', async (req, res) => {
+  try {
+    const { teamMembers } = collections();
+    const docs = await teamMembers.find({}).sort({ order: 1, createdAt: -1 }).toArray();
+    res.json(docs.map(mapTeamMember));
+  } catch (err) {
+    console.error('GET /team-members error:', err);
+    res.status(500).json({ error: 'Failed to fetch team members' });
+  }
+});
+
+app.post('/admin-services/team-members/', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!payload.name || typeof payload.name !== 'string') {
+      return res.status(400).json({ error: 'name is required' });
+    }
+
+    const now = new Date();
+    const doc = {
+      name: payload.name,
+      affiliation: typeof payload.affiliation === 'string' ? payload.affiliation : '',
+      avatar_url: typeof payload.avatar_url === 'string' ? payload.avatar_url : '',
+      scholar_url: typeof payload.scholar_url === 'string' ? payload.scholar_url : '',
+      linkedin_url: typeof payload.linkedin_url === 'string' ? payload.linkedin_url : '',
+      order: Number.isFinite(Number(payload.order)) ? Number(payload.order) : 0,
+      published: payload.published !== undefined ? !!payload.published : true,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const { teamMembers } = collections();
+    const result = await teamMembers.insertOne(doc);
+    doc._id = result.insertedId;
+    res.status(201).json({ success: true, data: mapTeamMember(doc) });
+  } catch (err) {
+    console.error('POST /team-members error:', err);
+    res.status(500).json({ error: 'Failed to create team member' });
+  }
+});
+
+app.put('/admin-services/team-members/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const updates = req.body || {};
+    const allowed = ['name', 'affiliation', 'avatar_url', 'scholar_url', 'linkedin_url', 'order', 'published'];
+    const $set = { updatedAt: new Date() };
+    for (const key of allowed) {
+      if (key in updates) $set[key] = key === 'order' ? Number(updates[key]) : updates[key];
+    }
+
+    const { teamMembers } = collections();
+    const result = await teamMembers.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set },
+      { returnDocument: 'after' }
+    );
+    if (!result?.value) return res.status(404).json({ error: 'Team member not found' });
+    res.json({ success: true, data: mapTeamMember(result.value) });
+  } catch (err) {
+    console.error('PUT /team-members/:id error:', err);
+    res.status(500).json({ error: 'Failed to update team member' });
+  }
+});
+
+app.delete('/admin-services/team-members/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const { teamMembers } = collections();
+    const result = await teamMembers.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: 'Team member not found' });
+    res.json({ success: true, deleted: 1 });
+  } catch (err) {
+    console.error('DELETE /team-members/:id error:', err);
+    res.status(500).json({ error: 'Failed to delete team member' });
+  }
+});
+
+// PUBLIC TEAM MEMBERS
+app.get('/admin-services/public/team-members/', async (req, res) => {
+  try {
+    const { teamMembers } = collections();
+    const docs = await teamMembers.find({ published: true }).sort({ order: 1, createdAt: -1 }).toArray();
+    res.json(docs.map(mapTeamMember));
+  } catch (err) {
+    console.error('GET /public/team-members error:', err);
+    res.status(500).json({ error: 'Failed to fetch team members' });
   }
 });
 
