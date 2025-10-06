@@ -45,7 +45,8 @@ function collections() {
   const users = db.collection('users');
   const insights = db.collection('public_insights');
   const teamMembers = db.collection('team_members');
-  return { events, categories, users, insights, teamMembers };
+  const manuals = db.collection('user_manuals'); 
+  return { events, categories, users, insights, teamMembers, manuals};
 }
 
 function mapEvent(doc) {
@@ -302,9 +303,14 @@ app.post('/admin-services/team-members/', async (req, res) => {
     const doc = {
       name: payload.name,
       affiliation: typeof payload.affiliation === 'string' ? payload.affiliation : '',
+      position1: typeof payload.position1 === 'string' ? payload.position1 : '',
+      position2: typeof payload.position2 === 'string' ? payload.position2 : '',
       avatar_url: typeof payload.avatar_url === 'string' ? payload.avatar_url : '',
       scholar_url: typeof payload.scholar_url === 'string' ? payload.scholar_url : '',
       linkedin_url: typeof payload.linkedin_url === 'string' ? payload.linkedin_url : '',
+      position1_link: typeof payload.position1_link === 'string' ? payload.position1_link : '',
+      position2_link: typeof payload.position2_link === 'string' ? payload.position2_link : '',
+      affiliation_link: typeof payload.affiliation_link === 'string' ? payload.affiliation_link : '',
       order: Number.isFinite(Number(payload.order)) ? Number(payload.order) : 0,
       published: payload.published !== undefined ? !!payload.published : true,
       createdAt: now,
@@ -326,7 +332,7 @@ app.put('/admin-services/team-members/:id', async (req, res) => {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
     const updates = req.body || {};
-    const allowed = ['name', 'affiliation', 'avatar_url', 'scholar_url', 'linkedin_url', 'order', 'published'];
+    const allowed = ['name', 'affiliation', 'position1', 'position2', 'avatar_url', 'scholar_url', 'linkedin_url', 'position1_link', 'position2_link', 'affiliation_link', 'order', 'published'];
     const $set = { updatedAt: new Date() };
     for (const key of allowed) {
       if (key in updates) $set[key] = key === 'order' ? Number(updates[key]) : updates[key];
@@ -480,6 +486,110 @@ app.post('/admin-services/users/login', async (req, res) => {
   }
 });
 
+// Helper function for mapping manual documents
+function mapManual(doc) {
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return { id: _id?.toString(), ...rest };
+}
+
+// GET all manuals (public - for UserManual page)
+app.get('/admin-services/public/user-manuals/', async (req, res) => {
+  try {
+    const { manuals } = collections();
+    const docs = await manuals.find({ published: true }).sort({ order: 1, createdAt: -1 }).toArray();
+    res.json(docs.map(mapManual));
+  } catch (err) {
+    console.error('GET /public/user-manuals error:', err);
+    res.status(500).json({ error: 'Failed to fetch manuals' });
+  }
+});
+
+// GET all manuals (admin)
+app.get('/admin-services/user-manuals/', async (req, res) => {
+  try {
+    const { manuals } = collections();
+    const docs = await manuals.find({}).sort({ order: 1, createdAt: -1 }).toArray();
+    res.json(docs.map(mapManual));
+  } catch (err) {
+    console.error('GET /user-manuals error:', err);
+    res.status(500).json({ error: 'Failed to fetch manuals' });
+  }
+});
+
+// CREATE manual
+app.post('/admin-services/user-manuals/', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    if (!payload.title || typeof payload.title !== 'string') {
+      return res.status(400).json({ error: 'title is required' });
+    }
+
+    const now = new Date();
+    const doc = {
+      title: payload.title,
+      description: typeof payload.description === 'string' ? payload.description : '',
+      video_url: typeof payload.video_url === 'string' ? payload.video_url : '',
+      thumbnail_url: typeof payload.thumbnail_url === 'string' ? payload.thumbnail_url : '',
+      manual_pdf_url: typeof payload.manual_pdf_url === 'string' ? payload.manual_pdf_url : '',
+      order: Number.isFinite(Number(payload.order)) ? Number(payload.order) : 0,
+      published: payload.published !== undefined ? !!payload.published : true,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const { manuals } = collections();
+    const result = await manuals.insertOne(doc);
+    doc._id = result.insertedId;
+    res.status(201).json({ success: true, data: mapManual(doc) });
+  } catch (err) {
+    console.error('POST /user-manuals error:', err);
+    res.status(500).json({ error: 'Failed to create manual' });
+  }
+});
+
+// UPDATE manual
+app.put('/admin-services/user-manuals/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const updates = req.body || {};
+    const allowed = ['title', 'description', 'video_url', 'thumbnail_url', 'manual_pdf_url', 'order', 'published'];
+    const $set = { updatedAt: new Date() };
+    for (const key of allowed) {
+      if (key in updates) $set[key] = key === 'order' ? Number(updates[key]) : updates[key];
+    }
+
+    const { manuals } = collections();
+    const result = await manuals.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set },
+      { returnDocument: 'after' }
+    );
+    if (!result?.value) return res.status(404).json({ error: 'Manual not found' });
+    res.json({ success: true, data: mapManual(result.value) });
+  } catch (err) {
+    console.error('PUT /user-manuals/:id error:', err);
+    res.status(500).json({ error: 'Failed to update manual' });
+  }
+});
+
+// DELETE manual
+app.delete('/admin-services/user-manuals/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const { manuals } = collections();
+    const result = await manuals.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: 'Manual not found' });
+    res.json({ success: true, deleted: 1 });
+  } catch (err) {
+    console.error('DELETE /user-manuals/:id error:', err);
+    res.status(500).json({ error: 'Failed to delete manual' });
+  }
+});
+
+
 // Start server after DB connects
 init().then(() => {
   app.listen(PORT, () => {
@@ -493,3 +603,4 @@ process.on('SIGINT', async () => {
   } catch (e) {}
   process.exit(0);
 });
+
