@@ -14,9 +14,6 @@ const PORT = process.env.PORT || 5000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const DB_NAME = process.env.DB_NAME || 'metainfosci_db';
 
-// Admin staff emails - users with these emails get admin access
-const STAFF_EMAILS = (process.env.STAFF_EMAILS || 'kiran.sharma@bmu.edu.in').split(',').map(e => e.trim().toLowerCase());
-
 if (!MONGODB_URI) {
   console.error('Missing MONGODB_URI in backend/.env');
 }
@@ -236,39 +233,6 @@ app.get('/admin-services/public/platform-insights/', async (req, res) => {
   }
 });
 
-// Check if user is staff (based on email whitelist)
-app.post('/admin-services/check-staff/', async (req, res) => {
-  try {
-    const { email } = req.body;
-    
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ 
-        success: false, 
-        is_staff: false,
-        message: 'Email is required' 
-      });
-    }
-    
-    const normalizedEmail = email.trim().toLowerCase();
-    const isStaff = STAFF_EMAILS.includes(normalizedEmail);
-    
-    console.log(`[check-staff] Email: ${normalizedEmail}, Is Staff: ${isStaff}`);
-    
-    res.json({
-      success: true,
-      is_staff: isStaff,
-      email: normalizedEmail
-    });
-  } catch (err) {
-    console.error('POST /check-staff error:', err);
-    res.status(500).json({ 
-      success: false, 
-      is_staff: false,
-      error: 'Failed to check staff status' 
-    });
-  }
-});
-
 // UPSERT (increase-only) public insights (currently no auth; consider protecting in production)
 app.post('/admin-services/platform-insights/cache-upsert', async (req, res) => {
   try {
@@ -315,27 +279,6 @@ app.get('/admin-services/gallery-events/', async (req, res) => {
   try {
     const { events } = collections();
     const docs = await events.find({}).sort({ date: 1, createdAt: -1 }).toArray();
-    
-    // Auto-update status based on event date
-    const now = new Date();
-    now.setHours(0, 0, 0, 0); // Set to start of today for accurate date comparison
-    
-    for (const event of docs) {
-      if (event.status === 'Upcoming' && event.date) {
-        const eventDate = new Date(event.date);
-        eventDate.setHours(0, 0, 0, 0); // Set to start of event day
-        
-        // If event date has passed, update status to Concluded
-        if (eventDate < now) {
-          await events.updateOne(
-            { _id: event._id },
-            { $set: { status: 'Concluded', updatedAt: new Date() } }
-          );
-          event.status = 'Concluded'; // Update in-memory for this response
-        }
-      }
-    }
-    
     res.json(docs.map(mapEvent));
   } catch (err) {
     console.error('GET /gallery-events error:', err);
