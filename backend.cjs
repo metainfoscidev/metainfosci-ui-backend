@@ -48,7 +48,8 @@ function collections() {
   const manuals = db.collection('user_manuals');
   const testimonials = db.collection('testimonials');
   const carousel = db.collection('carousel');
-  return { events, categories, users, insights, teamMembers, manuals, testimonials, carousel};
+  const staffEmails = db.collection('staff_emails');
+  return { events, categories, users, insights, teamMembers, manuals, testimonials, carousel, staffEmails};
 }
 
 function mapEvent(doc) {
@@ -605,6 +606,71 @@ app.post('/admin-services/users/login', async (req, res) => {
   } catch (err) {
     console.error('POST /users/login error:', err);
     res.status(500).json({ error: 'Failed to login' });
+  }
+});
+
+// STAFF VERIFICATION: check if email is in staff_emails collection
+app.get('/admin-services/staff/verify/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    const { staffEmails } = collections();
+    const staff = await staffEmails.findOne({ email: email.toLowerCase().trim() });
+    return res.json({ is_staff: !!staff });
+  } catch (err) {
+    console.error('GET /staff/verify/:email error:', err);
+    res.status(500).json({ error: 'Failed to verify staff status' });
+  }
+});
+
+// STAFF EMAILS CRUD
+app.get('/admin-services/staff-emails/', async (req, res) => {
+  try {
+    const { staffEmails } = collections();
+    const docs = await staffEmails.find({}).sort({ createdAt: -1 }).toArray();
+    res.json(docs.map(doc => ({ id: doc._id.toString(), email: doc.email, createdAt: doc.createdAt })));
+  } catch (err) {
+    console.error('GET /staff-emails error:', err);
+    res.status(500).json({ error: 'Failed to fetch staff emails' });
+  }
+});
+
+app.post('/admin-services/staff-emails/', async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+    const { staffEmails } = collections();
+    const normalizedEmail = email.toLowerCase().trim();
+    
+    const existing = await staffEmails.findOne({ email: normalizedEmail });
+    if (existing) return res.status(409).json({ error: 'Email already exists' });
+
+    const now = new Date();
+    const doc = { email: normalizedEmail, createdAt: now };
+    const result = await staffEmails.insertOne(doc);
+    doc.id = result.insertedId.toString();
+    res.status(201).json({ success: true, data: doc });
+  } catch (err) {
+    console.error('POST /staff-emails error:', err);
+    res.status(500).json({ error: 'Failed to add staff email' });
+  }
+});
+
+app.delete('/admin-services/staff-emails/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid id' });
+    const { staffEmails } = collections();
+    const result = await staffEmails.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: 'Staff email not found' });
+    res.json({ success: true, deleted: 1 });
+  } catch (err) {
+    console.error('DELETE /staff-emails/:id error:', err);
+    res.status(500).json({ error: 'Failed to delete staff email' });
   }
 });
 
