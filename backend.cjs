@@ -997,6 +997,18 @@ app.delete('/admin-services/testimonials/:id', async (req, res) => {
   }
 });
 
+// GET pending testimonials count (for admin notification badge)
+app.get('/admin-services/testimonials/pending/count', async (req, res) => {
+  try {
+    const { testimonials } = collections();
+    const count = await testimonials.countDocuments({ status: 'pending' });
+    res.json({ success: true, count });
+  } catch (err) {
+    console.error('GET /testimonials/pending/count error:', err);
+    res.status(500).json({ error: 'Failed to fetch pending count' });
+  }
+});
+
 // CAROUSEL SEEDING - Initialize carousel with default images (run once)
 app.post('/admin-services/carousel/seed', async (req, res) => {
   try {
