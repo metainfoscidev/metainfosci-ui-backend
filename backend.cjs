@@ -7,6 +7,7 @@ const cors = require('cors');
 const { MongoClient, ObjectId } = require('mongodb');
 const bcrypt = require('bcryptjs');
 const dotenv = require('dotenv');
+const nodemailer = require('nodemailer');
 
 dotenv.config({ path: path.join(__dirname, '.env') });
 
@@ -98,8 +99,6 @@ async function handleOrderConflict(collection, itemId, newOrder, filter = {}) {
       return;
     }
 
-    console.log(`[handleOrderConflict] Moving item from order ${oldOrder} to ${newOrder}`);
-
     // Case 1: Moving DOWN (increasing order number, e.g., 1 -> 3)
     // Need to shift items between newOrder and oldOrder UP (decrease their order)
     if (oldOrder !== null && newOrder > oldOrder) {
@@ -112,7 +111,6 @@ async function handleOrderConflict(collection, itemId, newOrder, filter = {}) {
         .toArray();
 
       if (itemsToShiftUp.length > 0) {
-        console.log(`[handleOrderConflict] Shifting ${itemsToShiftUp.length} items UP (decreasing order)`);
         const bulkOps = itemsToShiftUp.map(item => ({
           updateOne: {
             filter: { _id: item._id },
@@ -135,7 +133,6 @@ async function handleOrderConflict(collection, itemId, newOrder, filter = {}) {
         .toArray();
 
       if (itemsToShiftDown.length > 0) {
-        console.log(`[handleOrderConflict] Shifting ${itemsToShiftDown.length} items DOWN (increasing order)`);
         const bulkOps = itemsToShiftDown.map(item => ({
           updateOne: {
             filter: { _id: item._id },
@@ -158,7 +155,6 @@ async function handleOrderConflict(collection, itemId, newOrder, filter = {}) {
         .toArray();
 
       if (itemsToShiftDown.length > 0) {
-        console.log(`[handleOrderConflict] New item: Shifting ${itemsToShiftDown.length} items DOWN`);
         const bulkOps = itemsToShiftDown.map(item => ({
           updateOne: {
             filter: { _id: item._id },
@@ -817,13 +813,6 @@ app.post('/admin-services/testimonials/', async (req, res) => {
   try {
     const { name, title, organization, email, content, border_color, profile_image } = req.body || {};
 
-    console.log('Received testimonial submission:', {
-      name,
-      email,
-      profile_image,
-      profile_image_length: profile_image?.length
-    });
-
     if (!name || typeof name !== 'string') {
       return res.status(400).json({ error: 'name is required' });
     }
@@ -843,7 +832,6 @@ app.post('/admin-services/testimonials/', async (req, res) => {
     });
 
     if (existingTestimonial) {
-      console.log('Duplicate testimonial attempt for:', email);
       return res.status(400).json({ 
         error: 'You have already submitted a testimonial. Please wait for admin review.',
         code: 'DUPLICATE_TESTIMONIAL'
@@ -868,12 +856,8 @@ app.post('/admin-services/testimonials/', async (req, res) => {
       submitted_by: null,
     };
 
-    console.log('Saving testimonial with profile_image:', doc.profile_image);
-
     const result = await testimonials.insertOne(doc);
     doc._id = result.insertedId;
-
-    console.log('Saved testimonial, returning:', { id: doc._id, profile_image: doc.profile_image });
 
     res.status(201).json({ success: true, data: mapTestimonial(doc) });
   } catch (err) {
@@ -908,11 +892,8 @@ app.get('/admin-services/testimonials/admin/all', async (req, res) => {
 app.put('/admin-services/testimonials/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('PUT /testimonials/:id - Received ID:', id);
-    console.log('PUT /testimonials/:id - Request body:', req.body);
     
     if (!ObjectId.isValid(id)) {
-      console.log('PUT /testimonials/:id - Invalid ObjectId');
       return res.status(400).json({ error: 'Invalid id' });
     }
 
@@ -947,8 +928,6 @@ app.put('/admin-services/testimonials/:id', async (req, res) => {
       }
     }
 
-    console.log('PUT /testimonials/:id - Updates to apply:', $set);
-
     const { testimonials } = collections();
     
     // Handle order conflicts before updating (only for approved testimonials)
@@ -962,15 +941,11 @@ app.put('/admin-services/testimonials/:id', async (req, res) => {
       { returnDocument: 'after' }
     );
 
-    console.log('PUT /testimonials/:id - MongoDB result:', result);
-
     // MongoDB driver returns the document directly in 'result', not 'result.value'
     if (!result) {
-      console.log('PUT /testimonials/:id - Testimonial not found in database');
       return res.status(404).json({ error: 'Testimonial not found' });
     }
     
-    console.log('PUT /testimonials/:id - Success!');
     res.json({ success: true, data: mapTestimonial(result) });
   } catch (err) {
     console.error('PUT /testimonials/:id error:', err);
@@ -1165,6 +1140,156 @@ app.delete('/admin-services/carousel/:id', async (req, res) => {
   } catch (err) {
     console.error('DELETE /carousel/:id error:', err);
     res.status(500).json({ error: 'Failed to delete carousel image' });
+  }
+});
+
+// GET all active users (for admin to send emails)
+app.get('/admin-services/users/active', async (req, res) => {
+  try {
+    // Fetch active researchers from Django backend - same logic as CSV download
+    const djangoUrl = process.env.DJANGO_API_URL || 'http://127.0.0.1:8000';
+    
+    const response = await fetch(`${djangoUrl}/api/users/`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      }
+    });
+    
+    if (!response.ok) {
+      console.error('Failed to fetch users from Django:', response.status);
+      return res.status(500).json({
+        success: false,
+        users: [],
+        error: 'Failed to fetch active researchers'
+      });
+    }
+    
+    const data = await response.json();
+    const allUsers = Array.isArray(data.results) ? data.results : (Array.isArray(data) ? data : []);
+    
+    // Filter for active users only (same logic as CSV download)
+    const activeUsers = allUsers
+      .filter(user => user.is_active === true)
+      .map(user => ({
+        id: user.userId || user.id,
+        email: user.email || '',
+        name: `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.email || 'User',
+        first_name: user.first_name || '',
+        last_name: user.last_name || '',
+        date_joined: user.date_joined,
+        is_verified: user.is_verified,
+      }));
+    
+    res.json({
+      success: true,
+      users: activeUsers,
+      count: activeUsers.length
+    });
+  } catch (err) {
+    console.error('GET /users/active error:', err);
+    res.status(500).json({
+      success: false,
+      users: [],
+      error: 'Failed to fetch active users'
+    });
+  }
+});
+
+// Test email configuration
+app.get('/admin-services/test-email/', async (req, res) => {
+  try {
+    const gmailUser = process.env.GMAIL_USER || 'metainfoscidev@gmail.com';
+    const gmailPassword = process.env.GMAIL_PASSWORD || '';
+    
+    if (!gmailPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Gmail password not configured in .env file'
+      });
+    }
+
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: gmailUser,
+        pass: gmailPassword.trim()
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+
+    // Verify connection
+    await transporter.verify();
+    
+    res.json({
+      success: true,
+      message: 'Email configuration is valid',
+      gmailUser: gmailUser,
+      passwordConfigured: gmailPassword.length > 0
+    });
+  } catch (err) {
+    console.error('[Email Test] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: `Email configuration test failed: ${err.message}`,
+      error: err.code
+    });
+  }
+});
+
+// POST send email to user
+app.post('/admin-services/send-email/', async (req, res) => {
+  try {
+    const { recipient_email, subject, message } = req.body || {};
+    
+    if (!recipient_email || !message) {
+      return res.status(400).json({
+        success: false,
+        message: 'recipient_email and message are required'
+      });
+    }
+
+    // Get Gmail credentials from environment
+    const gmailUser = process.env.GMAIL_USER || 'metainfoscidev@gmail.com';
+    const gmailPassword = process.env.GMAIL_PASSWORD || '';
+
+    // Use Gmail SMTP with nodemailer
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: gmailUser,
+        pass: gmailPassword.trim() // Remove any whitespace
+      },
+      tls: {
+        rejectUnauthorized: false
+      }
+    });
+
+    const mailOptions = {
+      from: gmailUser,
+      to: recipient_email,
+      subject: subject || 'Message from MetaInfoSci',
+      text: message,
+      html: `<p>${message.replace(/\n/g, '<br>')}</p>`
+    };
+    
+    const info = await transporter.sendMail(mailOptions);
+    
+    res.json({
+      success: true,
+      message: `Email sent successfully to ${recipient_email}`,
+      messageId: info.messageId
+    });
+  } catch (err) {
+    console.error('[Email] Error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: `Failed to send email: ${err.message}`,
+      error: err.code,
+      details: err.response || err.message
+    });
   }
 });
 
