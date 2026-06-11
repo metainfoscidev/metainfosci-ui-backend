@@ -9,11 +9,19 @@
     "start": "node backend.cjs",
     "seed": "node seed-data.cjs"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "npmConfig": {
+    "legacy-peer-deps": true
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
-    "mongodb": "^6.20.0"
+    "mongodb": "^6.20.0",
+    "node-fetch": "^3.3.2",
+    "nodemailer": "^6.9.7"
   }
 }
